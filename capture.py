@@ -4,7 +4,7 @@ capture.py
 this is the main file for capturing the dataset for training.
 
 input is from the arduino to get voltage, adc, resistance.
-input is also from the camera to get yellow and blue x and y , pixel distance, resting distance
+input is also from the camera to get red or yellow and blue x and y , pixel distance, resting distance
 
 output is the above + time in ms, and strain ratio as a csv file 
 """
@@ -18,16 +18,16 @@ import numpy as np
 SERIAL_PORT = 'COM7'
 BAUD_RATE = 115200
 CAMERA_INDEX = 2
-OUTPUT_FILE = 'session_002.csv'
+OUTPUT_FILE = 'session_005.csv'  # increment 
 
 # hsv ranges found in hsv_finder.py for my alligator clips 
-# yellow clip (left)
-YELLOW_LOW  = np.array([20,  80,  140])
-YELLOW_HIGH = np.array([35,  255, 255])
+# red clip (left)
+RED_LOW  = np.array([165, 120, 120])
+RED_HIGH = np.array([180, 185, 230])
 
 # blue clip (right)
 BLUE_LOW  = np.array([100, 200, 100])
-BLUE_HIGH = np.array([124, 255, 200])
+BLUE_HIGH = np.array([172, 255, 200])
 
 def find_clip(frame, lower, upper):
     # find the centre of the clip
@@ -76,7 +76,7 @@ with open(OUTPUT_FILE, 'w', newline='') as f:
         'adc_raw',
         'voltage',
         'resistance_ohm',
-        'yellow_x', 'yellow_y',
+        'red_x', 'red_y',
         'blue_x', 'blue_y',
         'pixel_distance',
         'resting_distance',
@@ -93,18 +93,18 @@ with open(OUTPUT_FILE, 'w', newline='') as f:
         if not ret:
             continue
 
-        yellow = find_clip(frame, YELLOW_LOW, YELLOW_HIGH)
+        red = find_clip(frame, RED_LOW, RED_HIGH)
         blue   = find_clip(frame, BLUE_LOW,   BLUE_HIGH)
 
-        if yellow and blue:
-            d = np.sqrt((blue[0]-yellow[0])**2 +
-                        (blue[1]-yellow[1])**2)
+        if red and blue:
+            d = np.sqrt((blue[0]-red[0])**2 +
+                        (blue[1]-red[1])**2)
             resting_distances.append(d)
 
             # show detection during rest phase
-            cv2.circle(frame, yellow, 12, (0, 255, 255), -1)
+            cv2.circle(frame, red, 12, (0, 255, 255), -1)
             cv2.circle(frame, blue,   12, (255, 100, 0), -1)
-            cv2.line(frame, yellow, blue, (255, 255, 255), 2)
+            cv2.line(frame, red, blue, (255, 255, 255), 2)
             cv2.putText(frame, "REST PHASE - hold still",
                         (20, 40),
                         cv2.FONT_HERSHEY_SIMPLEX,
@@ -146,21 +146,21 @@ with open(OUTPUT_FILE, 'w', newline='') as f:
                 pass
 
         # find both clips
-        yellow = find_clip(frame, YELLOW_LOW, YELLOW_HIGH)
+        red = find_clip(frame, RED_LOW, RED_HIGH)
         blue   = find_clip(frame, BLUE_LOW,   BLUE_HIGH)
 
         pixel_dist  = None
         strain_ratio = None
 
-        if yellow and blue:
-            pixel_dist = np.sqrt((blue[0]-yellow[0])**2 +
-                                  (blue[1]-yellow[1])**2)
+        if red and blue:
+            pixel_dist = np.sqrt((blue[0]-red[0])**2 +
+                                  (blue[1]-red[1])**2)
             strain_ratio = pixel_dist / resting_distance
 
             # draw tracking
-            cv2.circle(frame, yellow, 12, (0, 255, 255), -1)
+            cv2.circle(frame, red, 12, (0, 255, 255), -1)
             cv2.circle(frame, blue,   12, (255, 100, 0), -1)
-            cv2.line(frame, yellow, blue, (0, 255, 0), 2)
+            cv2.line(frame, red, blue, (0, 255, 0), 2)
             cv2.putText(frame,
                         f"Strain: {strain_ratio:.3f}",
                         (20, 40),
@@ -186,8 +186,8 @@ with open(OUTPUT_FILE, 'w', newline='') as f:
             last_adc,
             last_voltage,
             last_resistance,
-            yellow[0] if yellow else None,
-            yellow[1] if yellow else None,
+            red[0] if red else None,
+            red[1] if red else None,
             blue[0]   if blue   else None,
             blue[1]   if blue   else None,
             pixel_dist,
