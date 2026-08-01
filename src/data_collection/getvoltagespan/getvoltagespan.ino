@@ -1,0 +1,41 @@
+#include <SPI.h>
+
+const int CS_PIN = 10;
+
+void setup() {
+  Serial.begin(115200);
+  SPI.begin();
+  SPI.beginTransaction(SPISettings(1350000, MSBFIRST, SPI_MODE0));
+  pinMode(CS_PIN, OUTPUT);
+  digitalWrite(CS_PIN, HIGH);
+}
+
+int readMCP3208(int channel) {
+  digitalWrite(CS_PIN, LOW);
+  byte b0 = SPI.transfer(0x06 | (channel >> 2));
+  byte b1 = SPI.transfer((channel & 0x03) << 6);
+  byte b2 = SPI.transfer(0x00);
+  digitalWrite(CS_PIN, HIGH);
+  return ((b1 & 0x0F) << 8) | b2;
+}
+
+void loop() {
+  int raw = readMCP3208(0);
+  float voltage = raw * (5.0 / 4095.0);
+
+  // Correct Rs value
+  float R_known = 3200.0;
+
+  // Calculate sensor resistance from voltage divider
+  float R_sensor = R_known * voltage / (5.0 - voltage);
+
+  Serial.print(millis());
+  Serial.print(",");
+  Serial.print(raw);
+  Serial.print(",");
+  Serial.print(voltage, 4);
+  Serial.print(",");
+  Serial.println(R_sensor, 4);
+
+  delay(10);
+}
