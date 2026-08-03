@@ -1,6 +1,6 @@
 """
 data_inspection.py
-inspect the data collected in the csv files from capture.py 
+inspect the data collected in the csv files from capture.py and export as cleaned 
 """
 
 import pandas as pd
@@ -8,12 +8,12 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 #  change global var for session 
-SESSION = 'session_005.csv'
+SESSION = 'outputs/data_collection_outputs/session_008.csv'
 
 df = pd.read_csv(SESSION)
 
 # filter implausible electrical values before missingness analysis
-df = df[(df['adc_raw'] > 10) & (df['adc_raw'] < 4085) | df['adc_raw'].isna()]
+df = df[(df['adc_raw'].isna()) | ((df['adc_raw'] > 10) & (df['adc_raw'] < 4085))]
 print(f"INSPECTING: {SESSION}")
 print(f"Columns: {list(df.columns)}")
 
@@ -56,10 +56,17 @@ df = df.dropna(subset=['adc_raw', 'strain_ratio'])
 print(f"\nAfter interpolation and dropping long gaps: {len(df)}")
 
 # mark sequence boundaries at long gaps
-# any timestamp jump > 200ms is a sequence boundary   ---------> 200 was arbitrary, can change to 500 maybe so half a second? 
+# any timestamp jump > 200ms - prev was 500ms so it was half a second but reduced
 # sequences should not cross these boundaries during training
 df['time_gap'] = df['timestamp_ms'].diff()
-df['sequence_break'] = df['time_gap'] > 200
+
+df['sequence_break'] = (
+    (df['time_gap'] > 200) |
+    (df['strain_ratio'].isna()) |
+    (df['adc_raw'].isna()) |
+    (df['pixel_distance'].isna())
+)
+
 
 n_breaks = df['sequence_break'].sum()
 print(f"Sequence breaks (gaps > 200ms): {n_breaks}")

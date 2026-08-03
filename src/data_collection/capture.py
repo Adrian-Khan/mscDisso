@@ -18,7 +18,7 @@ import numpy as np
 SERIAL_PORT = 'COM7'
 BAUD_RATE = 115200
 CAMERA_INDEX = 2
-OUTPUT_FILE = 'session_005.csv'  # increment 
+OUTPUT_FILE = 'outputs/data_collection_outputs/session_008.csv'  # increment 
 
 # hsv ranges found in hsv_finder.py for my alligator clips 
 # red clip (left)
@@ -134,16 +134,14 @@ with open(OUTPUT_FILE, 'w', newline='') as f:
         t_ms = int((time.time() - start) * 1000)
 
         # read latest serial line
-        if ser.in_waiting > 0:
-            try:
-                line = ser.readline().decode('utf-8').strip()
-                parts = line.split(',')
-                if len(parts) == 4:
-                    last_adc        = int(parts[1])
-                    last_voltage    = float(parts[2])
-                    last_resistance = float(parts[3])
-            except:
-                pass
+        while ser.in_waiting > 0:
+            line = ser.readline()
+            parts = line.decode().strip().split(',')
+            if len(parts) == 4:
+                last_adc        = int(parts[1])
+                last_voltage    = float(parts[2])
+                last_resistance = float(parts[3])
+
 
         # find both clips
         red = find_clip(frame, RED_LOW, RED_HIGH)
