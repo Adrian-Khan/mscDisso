@@ -416,7 +416,7 @@ def objective(trial, model_type):
     # 10 epochs like the paper 
     model, _, val_losses = train_model(
         model, train_loader, val_loader, 
-        epochs=40, lr=lr, model_name=f"Trial_{trial.number}", verbose=False
+        epochs=10, lr=lr, model_name=f"Trial_{trial.number}", verbose=False
     )
 
     return min(val_losses)
@@ -442,13 +442,17 @@ if __name__ == "__main__":
         )
         
         def trial_callback(study, trial):
-            print(f"  Trial {trial.number + 1}/50 | Val loss: {trial.value:.6f} | "
-                f"Best so far: {study.best_value:.6f} | "
-                f"Params: { {k.replace(f'{model_name}_', ''): v for k, v in trial.params.items()} }")
+            best_val = f"{study.best_value:.6f}" if len(study.completed_trials) > 0 else "N/A"
+            trial_val = f"{trial.value:.6f}" if trial.value is not None else "N/A"
+            clean_p = {k.replace(f"{model_name}_", ""): v for k, v in trial.params.items()}
+            
+            print(f"  Trial {trial.number + 1}/50 | Val loss: {trial_val} | "
+                f"Best so far: {best_val} | "
+                f"Params: {clean_p}")
 
         study.optimize(
             lambda trial: objective(trial, model_type=model_name),
-            n_trials=300,
+            n_trials=50,
             callbacks=[trial_callback])
         
         # clean parameter names (strip the prefix for final retraining)
