@@ -1,35 +1,29 @@
 """
 train.py
 
-i will train all three models here on session_08_clean.csv (my best dataset)
-
-input: adc_raw (normalised)
-output: strain_ratio (normalised)
+Trains LSTM, CNN-LSTM, and CNN-LSTM-Attention models with Bayesian Optimization (Optuna)
+Input: adc_raw (normalised) + gradient (normalised)
+Output: strain_ratio (normalised)
 """
+import os
+import json
 import numpy as np
 import pandas as pd
+import matplotlib.pyplot as plt
+from datetime import datetime
+
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
-from sklearn.preprocessing import MinMaxScaler
-import matplotlib.pyplot as plt
-import os
-import json
-from datetime import datetime
+import optuna
 
-
-# config - experiment with later and are there any papers with some better settings after we do some typical ones 
-DATA_FILE = "/scratch0/adrikhan/sensor_project/session_008_clean.csv"
-SEQ_LEN = 120    # timesteps per sequence should be around 120 ish
-BATCH_SIZE = 32
-EPOCHS = 150
-LR = 1e-3
-HIDDEN_SIZE = 64
-NUM_LAYERS = 2
-DROPOUT = 0.3
+# config 
+DATA_FILE = "outputs\data_collection_outputs\session_008_clean.csv"
+#DATA_FILE = "/scratch0/adrikhan/sensor_project/session_008_clean.csv"
+SEQ_LEN = 120    # timesteps per sequence
+EPOCHS = 150     # final evaluation epochs
 TRAIN_SPLIT = 0.7
-VAL_SPLIT = 0.15
-# test split is remainder: 0.15
+VAL_SPLIT = 0.15  # test split is remainder: 0.15
 EARLY_STOP_PATIENCE = 40
 SEED = 42
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -39,30 +33,26 @@ np.random.seed(SEED)
 print(f"Using device: {DEVICE}")
 print(f"Loading data from: {DATA_FILE}")
 
-
 # load and process data 
 df = pd.read_csv(DATA_FILE)
 
-# use adc_raw as input and strain_ratio as output
 adc = df['adc_raw'].values.astype(np.float32)
 strain = df['strain_ratio'].values.astype(np.float32)
 breaks = df['sequence_break'].values.astype(bool)
 
-# normalise adc to 0-1
+# normalise signals
 adc_min, adc_max = adc.min(), adc.max()
 strain_min, strain_max = strain.min(), strain.max()
 
 adc_norm = (adc - adc_min) / (adc_max - adc_min)
 strain_norm = (strain - strain_min) / (strain_max - strain_min)
 
-# compute gradient (rate of change) of normalised ADC
+# compute gradient (rate of change)
 adc_grad = np.gradient(adc_norm).astype(np.float32)
-
-# normalise gradient to 0-1
 grad_min, grad_max = adc_grad.min(), adc_grad.max()
 adc_grad_norm = (adc_grad - grad_min) / (grad_max - grad_min)
 
-# save normalisation params including gradient
+# save normalization parameters
 norm_params = {
     'adc_min': float(adc_min),
     'adc_max': float(adc_max),
@@ -76,17 +66,14 @@ with open('norm_params.json', 'w') as f:
     json.dump(norm_params, f, indent=2)
 print("Saved normalisation parameters to norm_params.json")
 
-# create sequences 
-# using sliding window sequences that do not cross sequence breaks 
+
 def make_sequences(adc_norm, adc_grad_norm, strain_norm, breaks, seq_len):
     X, y = [], []
     n = len(adc_norm)
     for i in range(n - seq_len):
         if breaks[i+1 : i+seq_len+1].any():
             continue
-        # stack adc and gradient as two features
-        # seq = adc_norm[i:i+seq_len][:, None] # replace w raw values for testing but then REREPLACE WITH NORMALISED!
-        seq = np.stack([adc_norm[i : i+seq_len], adc_grad_norm[i : i+seq_len]], axis=-1)  # shape: (seq_len, 2)
+        seq = np.stack([adc_norm[i : i+seq_len], adc_grad_norm[i : i+seq_len]], axis=-1)
         X.append(seq)
         y.append(strain_norm[i+seq_len])
     return np.array(X, dtype=np.float32), np.array(y, dtype=np.float32)
@@ -96,9 +83,7 @@ X, y = make_sequences(adc_norm, adc_grad_norm, strain_norm, breaks, SEQ_LEN)
 print(f"Total sequences: {len(X)}")
 print(f"Input shape: {X.shape} Output shape: {y.shape}")
 
-
-# train / val / test split
-# split chronologically - do not shuffle time series
+# chronological train / val / test split
 n = len(X)
 n_train = int(n * TRAIN_SPLIT)
 n_val = int(n * VAL_SPLIT)
@@ -112,10 +97,8 @@ print(f"Validation: {len(X_val)} sequences")
 print(f"Test: {len(X_test)} sequences")
 
 
-# dataset and dataloader
 class SensorDataset(Dataset):
     def __init__(self, X, y):
-        # X is already (N, seq_len, 2) - no unsqueeze needed
         self.X = torch.tensor(X)
         self.y = torch.tensor(y).unsqueeze(-1)
 
@@ -125,17 +108,9 @@ class SensorDataset(Dataset):
     def __getitem__(self, idx):
         return self.X[idx], self.y[idx]
 
-train_loader = DataLoader(SensorDataset(X_train, y_train), batch_size=BATCH_SIZE, shuffle=True)
-val_loader = DataLoader(SensorDataset(X_val, y_val), batch_size=BATCH_SIZE, shuffle=False)
-test_loader = DataLoader(SensorDataset(X_test, y_test), batch_size=BATCH_SIZE, shuffle=False)
-
-
-# model definitions 
-"""
-LSTM MODEL - JUST LSTM
-"""
+# dynamic model definitions
 class LSTMModel(nn.Module):
-    def __init__(self, input_size=2, hidden_size=HIDDEN_SIZE, num_layers=NUM_LAYERS, dropout=DROPOUT):
+    def __init__(self, input_size=2, hidden_size=64, num_layers=2, dropout=0.3):
         super().__init__()
         self.lstm = nn.LSTM(
             input_size=input_size,
@@ -148,50 +123,42 @@ class LSTMModel(nn.Module):
         self.fc = nn.Linear(hidden_size, 1)
 
     def forward(self, x):
-        # x: (batch, seq_len, 1)
         out, _ = self.lstm(x)
-        out = self.dropout(out[:, -1, :])  # take last timestep
+        out = self.dropout(out[:, -1, :])
         return self.fc(out)
 
 
-"""
-CNN-LSTM 
-"""
 class CNNLSTMModel(nn.Module):
-    def __init__(self, input_size=2, hidden_size=HIDDEN_SIZE, num_layers=NUM_LAYERS, dropout=DROPOUT):
+    def __init__(self, input_size=2, hidden_size=64, num_layers=2, dropout=0.3, conv1_filters=32, kernel_size=5):
         super().__init__()
+        padding = kernel_size // 2
+        
         self.cnn = nn.Sequential(
-            nn.Conv1d(in_channels=2, out_channels=32, kernel_size=5, padding=2),
+            nn.Conv1d(in_channels=input_size, out_channels=conv1_filters, kernel_size=kernel_size, padding=padding),
             nn.ReLU(),
-            nn.Conv1d(in_channels=32, out_channels=64, kernel_size=3, padding=1),
+            nn.Conv1d(in_channels=conv1_filters, out_channels=conv1_filters * 2, kernel_size=3, padding=1),
             nn.ReLU(),
             nn.Dropout(dropout)
         )
         self.lstm = nn.LSTM(
-            input_size=64,
+            input_size=conv1_filters * 2,
             hidden_size=hidden_size,
             num_layers=num_layers,
             batch_first=True,
             dropout=dropout if num_layers > 1 else 0.0
         )
         self.dropout = nn.Dropout(dropout)
-        self.fc      = nn.Linear(hidden_size, 1)
+        self.fc = nn.Linear(hidden_size, 1)
 
     def forward(self, x):
-        # x: (batch, seq_len, 1)
-        # CNN expects (batch, channels, seq_len)
         x = x.permute(0, 2, 1)
         x = self.cnn(x)
-        # back to (batch, seq_len, channels) for LSTM
         x = x.permute(0, 2, 1)
         out, _ = self.lstm(x)
         out = self.dropout(out[:, -1, :])
         return self.fc(out)
 
-"""
-CNN LSTM WITH ATTENTION
-"""
-# attention module 
+
 class Attention(nn.Module):
     def __init__(self, hidden_size):
         super().__init__()
@@ -199,26 +166,26 @@ class Attention(nn.Module):
         self.context = nn.Linear(hidden_size, 1, bias=False)
 
     def forward(self, lstm_out):
-        # lstm_out: (batch, seq_len, hidden_size)
         score = torch.tanh(self.attn(lstm_out))
         weight = torch.softmax(self.context(score), dim=1)
-        # weighted sum over timesteps
         out = (weight * lstm_out).sum(dim=1)
         return out, weight.squeeze(-1)
 
-# model 
+
 class CNNLSTMAttentionModel(nn.Module):
-    def __init__(self, input_size=2, hidden_size=HIDDEN_SIZE, num_layers=NUM_LAYERS, dropout=DROPOUT):
+    def __init__(self, input_size=2, hidden_size=64, num_layers=2, dropout=0.3, conv1_filters=32, kernel_size=5):
         super().__init__()
+        padding = kernel_size // 2
+        
         self.cnn = nn.Sequential(
-            nn.Conv1d(in_channels=2, out_channels=32, kernel_size=5, padding=2),
+            nn.Conv1d(in_channels=input_size, out_channels=conv1_filters, kernel_size=kernel_size, padding=padding),
             nn.ReLU(),
-            nn.Conv1d(in_channels=32, out_channels=64, kernel_size=3, padding=1),
+            nn.Conv1d(in_channels=conv1_filters, out_channels=conv1_filters * 2, kernel_size=3, padding=1),
             nn.ReLU(),
             nn.Dropout(dropout)
         )
         self.lstm = nn.LSTM(
-            input_size=64,
+            input_size=conv1_filters * 2,
             hidden_size=hidden_size,
             num_layers=num_layers,
             batch_first=True,
@@ -240,15 +207,13 @@ class CNNLSTMAttentionModel(nn.Module):
             return out, weights
         return out
 
-
-"""
-train func
-"""
-def train_model(model, train_loader, val_loader, epochs, lr, model_name):
-    print("\n===============================================================================")
-    print(f"Training: {model_name}")
-    print(f"Parameters: {sum(p.numel() for p in model.parameters()):,}")
-    print("\n===============================================================================")
+# train and eval funcs
+def train_model(model, train_loader, val_loader, epochs, lr, model_name, verbose=True):
+    if verbose:
+        print("\n===============================================================================")
+        print(f"Training: {model_name}")
+        print(f"Parameters: {sum(p.numel() for p in model.parameters()):,}")
+        print("===============================================================================")
 
     model = model.to(DEVICE)
     criterion = nn.MSELoss()
@@ -259,15 +224,12 @@ def train_model(model, train_loader, val_loader, epochs, lr, model_name):
     best_val_loss = float('inf')
     best_state = None
     patience_count = 0
-    early_stop_patience = EARLY_STOP_PATIENCE
 
     for epoch in range(1, epochs + 1):
-        # train
         model.train()
         batch_losses = []
         for X_batch, y_batch in train_loader:
-            X_batch = X_batch.to(DEVICE)
-            y_batch = y_batch.to(DEVICE)
+            X_batch, y_batch = X_batch.to(DEVICE), y_batch.to(DEVICE)
             optimiser.zero_grad()
             pred = model(X_batch)
             loss = criterion(pred, y_batch)
@@ -277,13 +239,11 @@ def train_model(model, train_loader, val_loader, epochs, lr, model_name):
             batch_losses.append(loss.item())
         train_loss = np.mean(batch_losses)
 
-        # validate
         model.eval()
         val_batch_losses = []
         with torch.no_grad():
             for X_batch, y_batch in val_loader:
-                X_batch = X_batch.to(DEVICE)
-                y_batch = y_batch.to(DEVICE)
+                X_batch, y_batch = X_batch.to(DEVICE), y_batch.to(DEVICE)
                 pred = model(X_batch)
                 loss = criterion(pred, y_batch)
                 val_batch_losses.append(loss.item())
@@ -293,7 +253,6 @@ def train_model(model, train_loader, val_loader, epochs, lr, model_name):
         val_losses.append(val_loss)
         scheduler.step(val_loss)
 
-        # save best model
         if val_loss < best_val_loss:
             best_val_loss = val_loss
             best_state = {k: v.clone() for k, v in model.state_dict().items()}
@@ -301,31 +260,19 @@ def train_model(model, train_loader, val_loader, epochs, lr, model_name):
         else:
             patience_count += 1
 
-        if epoch % 10 == 0:
-            print(f"Epoch {epoch:3d}/{epochs} | "
-                  f"Train loss: {train_loss:.6f} | "
-                  f"Val loss: {val_loss:.6f} | "
-                  f"Best val: {best_val_loss:.6f}")
+        if verbose and epoch % 10 == 0:
+            print(f"Epoch {epoch:3d}/{epochs} | Train loss: {train_loss:.6f} | Val loss: {val_loss:.6f} | Best val: {best_val_loss:.6f}")
 
-        # early stopping
         if patience_count >= EARLY_STOP_PATIENCE:
-            print(f"Early stopping at epoch {epoch}")
+            if verbose:
+                print(f"Early stopping at epoch {epoch}")
             break
 
-    # load best weights
-    model.load_state_dict(best_state)
-
-    # save model
-    save_path = f'{model_name}_best.pt'
-    torch.save(model.state_dict(), save_path)
-    print(f"Saved best model to {save_path}")
-
+    if best_state is not None:
+        model.load_state_dict(best_state)
     return model, train_losses, val_losses
 
-"""
-eval
-"""
-# evaluation
+
 def evaluate_model(model, test_loader, model_name, strain_min, strain_max):
     model.eval()
     preds_norm, targets_norm = [], []
@@ -340,13 +287,11 @@ def evaluate_model(model, test_loader, model_name, strain_min, strain_max):
     preds_norm = np.array(preds_norm)
     targets_norm = np.array(targets_norm)
 
-    # denormalise back to strain ratio
     preds = preds_norm * (strain_max - strain_min) + strain_min
     targets = targets_norm * (strain_max - strain_min) + strain_min
 
     mae = np.mean(np.abs(preds - targets))
     rmse = np.sqrt(np.mean((preds - targets) ** 2))
-    # R squared
     ss_res = np.sum((targets - preds) ** 2)
     ss_tot = np.sum((targets - targets.mean()) ** 2)
     r2 = 1 - ss_res / ss_tot
@@ -358,11 +303,7 @@ def evaluate_model(model, test_loader, model_name, strain_min, strain_max):
 
     return preds, targets, mae, rmse, r2
 
-
-"""
-plot
-"""
-# funcs 
+# plotting helpers 
 def plot_losses(train_losses, val_losses, model_name):
     plt.figure(figsize=(10, 4))
     plt.plot(train_losses, label='Train loss')
@@ -380,10 +321,8 @@ def plot_losses(train_losses, val_losses, model_name):
 def plot_predictions(preds, targets, model_name):
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 8))
 
-    # time series - first 500 predictions
     n = min(500, len(preds))
-    ax1.plot(targets[:n], label='Ground truth',
-             color='orange', linewidth=1.0)
+    ax1.plot(targets[:n], label='Ground truth', color='orange', linewidth=1.0)
     ax1.plot(preds[:n], label='Predicted', color='blue', linewidth=1.0, alpha=0.8)
     ax1.set_xlabel('Sample')
     ax1.set_ylabel('Strain Ratio')
@@ -391,7 +330,6 @@ def plot_predictions(preds, targets, model_name):
     ax1.legend()
     ax1.grid(True, alpha=0.3)
 
-    # scatter
     ax2.scatter(targets, preds, alpha=0.1, s=1, color='purple')
     lims = [min(targets.min(), preds.min()), max(targets.max(), preds.max())]
     ax2.plot(lims, lims, 'r--', linewidth=1, label='Perfect prediction')
@@ -415,15 +353,13 @@ def plot_attention(model, X_test, n_examples=3):
     indices = np.random.choice(len(X_test), n_examples, replace=False)
 
     for i, idx in enumerate(indices):
-        # FIX: Keep input as 3D (batch_size=1, seq_len, features)
         x = torch.tensor(X_test[idx], dtype=torch.float32).unsqueeze(0).to(DEVICE)
         
         with torch.no_grad():
             _, weights = model(x, return_attention=True)
             
         weights = weights.cpu().numpy().flatten()
-        # flatten adc_seq so it plots cleanly as a 1D sequence against weights
-        adc_seq = X_test[idx].squeeze()
+        adc_seq = X_test[idx][:, 0]  # Plot ADC feature sequence
 
         ax = axes[i]
         ax2 = ax.twinx()
@@ -439,57 +375,210 @@ def plot_attention(model, X_test, n_examples=3):
     plt.close()
     print("Saved attention maps to CNN_LSTM_Attention_attention_maps.png")
 
+# optuna bayesian optimization objective (fixed namespace)
+def objective(trial, model_type):
+    # Prefix parameter names with model_type to prevent distribution collisions
+    lr = trial.suggest_float(f"{model_type}_lr", 1e-4, 3e-3, log=True)
+    hidden_size = trial.suggest_categorical(f"{model_type}_hidden_size", [64, 128])
+    dropout = trial.suggest_float(f"{model_type}_dropout", 0.2, 0.5, step=0.05)
+    batch_size = trial.suggest_categorical(f"{model_type}_batch_size", [16, 32, 64])
 
-"""
-main training loop
-"""
-results = {}
+    train_loader = DataLoader(SensorDataset(X_train, y_train), batch_size=batch_size, shuffle=True)
+    val_loader = DataLoader(SensorDataset(X_val, y_val), batch_size=batch_size, shuffle=False)
 
-# model 1: lstm 
-lstm_model = LSTMModel()
-lstm_model, lstm_train_losses, lstm_val_losses = train_model(lstm_model, train_loader, val_loader, EPOCHS, LR, 'LSTM')
-plot_losses(lstm_train_losses, lstm_val_losses, 'LSTM')
-lstm_preds, lstm_targets, lstm_mae, lstm_rmse, lstm_r2 = evaluate_model(lstm_model, test_loader, 'LSTM', strain_min, strain_max)
-plot_predictions(lstm_preds, lstm_targets, 'LSTM')
-results['LSTM'] = {'MAE': lstm_mae, 'RMSE': lstm_rmse, 'R2': lstm_r2}
+    if model_type == "LSTM":
+        model = LSTMModel(
+            hidden_size=hidden_size, 
+            dropout=dropout
+        ).to(DEVICE)
 
-# model 2: cnn-lstm
-cnn_lstm_model = CNNLSTMModel()
-cnn_lstm_model, cnn_lstm_train_losses, cnn_lstm_val_losses = train_model(cnn_lstm_model, train_loader, val_loader, EPOCHS, LR, 'CNN_LSTM')
-plot_losses(cnn_lstm_train_losses, cnn_lstm_val_losses, 'CNN_LSTM')
-cnn_lstm_preds, cnn_lstm_targets, cnn_lstm_mae, cnn_lstm_rmse, cnn_lstm_r2 = evaluate_model(cnn_lstm_model, test_loader, 'CNN_LSTM', strain_min, strain_max)
-plot_predictions(cnn_lstm_preds, cnn_lstm_targets, 'CNN_LSTM')
-results['CNN_LSTM'] = {'MAE': cnn_lstm_mae,'RMSE': cnn_lstm_rmse, 'R2': cnn_lstm_r2}
+    elif model_type == "CNN_LSTM":
+        conv1_filters = trial.suggest_categorical(f"{model_type}_conv1_filters", [32, 64])
+        kernel_size = trial.suggest_categorical(f"{model_type}_kernel_size", [3, 5, 7])
+        model = CNNLSTMModel(
+            hidden_size=hidden_size, 
+            dropout=dropout, 
+            conv1_filters=conv1_filters, 
+            kernel_size=kernel_size
+        ).to(DEVICE)
 
-# model 3: cnn-lstm with attention
-attn_model = CNNLSTMAttentionModel()
-attn_model, attn_train_losses, attn_val_losses = train_model(attn_model, train_loader, val_loader, EPOCHS, LR, 'CNN_LSTM_Attention')
-plot_losses(attn_train_losses, attn_val_losses, 'CNN_LSTM_Attention')
-attn_preds, attn_targets, attn_mae, attn_rmse, attn_r2 = evaluate_model(attn_model, test_loader, 'CNN_LSTM_Attention', strain_min, strain_max)
-plot_predictions(attn_preds, attn_targets, 'CNN_LSTM_Attention')
-results['CNN_LSTM_Attention'] = {'MAE': attn_mae, 'RMSE': attn_rmse, 'R2': attn_r2}
+    elif model_type == "CNN_LSTM_Attention":
+        conv1_filters = trial.suggest_categorical(f"{model_type}_conv1_filters", [32, 64])
+        kernel_size = trial.suggest_categorical(f"{model_type}_kernel_size", [3, 5, 7])
+        model = CNNLSTMAttentionModel(
+            hidden_size=hidden_size, 
+            dropout=dropout, 
+            conv1_filters=conv1_filters, 
+            kernel_size=kernel_size
+        ).to(DEVICE)
 
-# attention maps on test set
-plot_attention(attn_model, X_test, n_examples=3)
+    # longer 40-epoch evaluation per trial for stable optimization
+    model, _, val_losses = train_model(
+        model, train_loader, val_loader, 
+        epochs=40, lr=lr, model_name=f"Trial_{trial.number}", verbose=False
+    )
 
-# final comparison of all 
-print("\n===============================================================================")
-print("FINAL RESULTS COMPARISON")
-print("\n===============================================================================")
-print(f"{'Model':<25} {'MAE':>8} {'RMSE':>8} {'R²':>8}")
-print("\n===============================================================================")
-for name, metrics in results.items():
-    print(f"{name:<25} "
-          f"{metrics['MAE']:>8.4f} "
-          f"{metrics['RMSE']:>8.4f} "
-          f"{metrics['R2']:>8.4f}")
+    return min(val_losses)
 
-# save results to json
-results_file = f'results_{datetime.now().strftime("%Y%m%d_%H%M%S")}.json'
 
-with open(results_file, 'w') as f:
-    json.dump({k: {m: float(v) for m, v in metrics.items()} 
-               for k, metrics in results.items()}, f, indent=2)
+#  main execution pipeline in main 
+if __name__ == "__main__":
+    optuna.logging.set_verbosity(optuna.logging.WARNING)
     
-print(f"\nResults saved to {results_file}")
-print("\nAll done.")
+    models_to_run = ["LSTM", "CNN_LSTM", "CNN_LSTM_Attention"]
+    best_hyperparams = {}
+    results = {}
+
+    # step 1: run bayesian optimization across all models
+    for model_name in models_to_run:
+        print(f"\n--- Starting Bayesian Optimization Study for {model_name} ---")
+        
+        # explicit fresh study creation per model
+        study = optuna.create_study(
+            study_name=f"study_{model_name}",
+            direction="minimize", 
+            sampler=optuna.samplers.TPESampler(seed=SEED)
+        )
+        
+        def trial_callback(study, trial):
+            print(f"  Trial {trial.number + 1}/50 | Val loss: {trial.value:.6f} | "
+                f"Best so far: {study.best_value:.6f} | "
+                f"Params: { {k.replace(f'{model_name}_', ''): v for k, v in trial.params.items()} }")
+
+        study.optimize(
+            lambda trial: objective(trial, model_type=model_name),
+            n_trials=50,
+            callbacks=[trial_callback])
+        
+        # clean parameter names (strip the prefix for final retraining)
+        clean_params = {k.replace(f"{model_name}_", ""): v for k, v in study.best_params.items()}
+        best_hyperparams[model_name] = clean_params
+
+        print(f"\n{'='*60}")
+        print(f"Optuna complete for {model_name}")
+        print(f"  Best validation loss: {study.best_value:.6f}")
+        print(f"  Best hyperparameters:")
+        for k, v in clean_params.items():
+            print(f"    {k}: {v}")
+        print(f"  Trials completed: {len(study.trials)}")
+        print(f"  Time: {datetime.now().strftime('%H:%M:%S')}")
+        print(f"{'='*60}")
+
+        # save trial history for this model to CSV
+        trials_df = study.trials_dataframe()
+        trials_df.to_csv(f'optuna_trials_{model_name}.csv', index=False)
+        print(f"  Trial history saved to optuna_trials_{model_name}.csv")
+
+    # step 2: full retraining and testing using best hyperparameters
+    print("\n" + "="*80)
+    print("RETRAIN FINAL MODELS WITH OPTIMAL HYPERPARAMETERS")
+    print("="*80)
+
+    for model_name, params in best_hyperparams.items():
+        batch_size = params['batch_size']
+        lr = params['lr']
+
+        train_loader = DataLoader(SensorDataset(X_train, y_train), batch_size=batch_size, shuffle=True)
+        val_loader   = DataLoader(SensorDataset(X_val, y_val), batch_size=batch_size, shuffle=False)
+        test_loader  = DataLoader(SensorDataset(X_test, y_test), batch_size=batch_size, shuffle=False)
+
+        if model_name == "LSTM":
+            final_model = LSTMModel(
+                hidden_size=params['hidden_size'], 
+                dropout=params['dropout']
+            )
+        elif model_name == "CNN_LSTM":
+            final_model = CNNLSTMModel(
+                hidden_size=params['hidden_size'], 
+                dropout=params['dropout'],
+                conv1_filters=params['conv1_filters'],
+                kernel_size=params['kernel_size']
+            )
+        elif model_name == "CNN_LSTM_Attention":
+            final_model = CNNLSTMAttentionModel(
+                hidden_size=params['hidden_size'], 
+                dropout=params['dropout'],
+                conv1_filters=params['conv1_filters'],
+                kernel_size=params['kernel_size']
+            )
+
+        print(f"\nRetraining {model_name} with optimal hyperparameters")
+        print(f"lr={lr:.6f} | hidden={params['hidden_size']} | "
+            f"dropout={params['dropout']:.2f} | batch={batch_size}")
+        print(f"Started at: {datetime.now().strftime('%H:%M:%S')}")
+
+        # full training run
+        final_model, train_losses, val_losses = train_model(
+            final_model, train_loader, val_loader, 
+            epochs=EPOCHS, lr=lr, model_name=f"{model_name}_Optimized"
+        )
+
+        print(f"Finished at: {datetime.now().strftime('%H:%M:%S')}")
+
+        plot_losses(train_losses, val_losses, f"{model_name}_Optimized")
+        
+        preds, targets, mae, rmse, r2 = evaluate_model(
+            final_model, test_loader, f"{model_name}_Optimized", strain_min, strain_max
+        )
+        plot_predictions(preds, targets, f"{model_name}_Optimized")
+        
+        results[model_name] = {'MAE': mae, 'RMSE': rmse, 'R2': r2}
+
+        if model_name == "CNN_LSTM_Attention":
+            plot_attention(final_model, X_test, n_examples=3)
+
+    # step 3: print and save final results comparison
+    print("\n===============================================================================")
+    print("FINAL BAYESIAN OPTIMIZED RESULTS COMPARISON")
+    print("===============================================================================")
+    print(f"{'Model':<25} {'MAE':>8} {'RMSE':>8} {'R²':>8}")
+    print("-------------------------------------------------------------------------------")
+    for name, metrics in results.items():
+        print(f"{name:<25} {metrics['MAE']:>8.4f} {metrics['RMSE']:>8.4f} {metrics['R2']:>8.4f}")
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    # save JSON as before
+    results_file = f'results_optimized_{timestamp}.json'
+    with open(results_file, 'w') as f:
+        json.dump({
+            "metrics": {k: {m: float(v) for m, v in metrics.items()}
+                        for k, metrics in results.items()},
+            "best_hyperparameters": best_hyperparams
+        }, f, indent=2)
+
+    # save metrics to CSV
+    metrics_rows = []
+    for model_name, metrics in results.items():
+        row = {
+            'model': model_name,
+            'MAE': float(metrics['MAE']),
+            'RMSE': float(metrics['RMSE']),
+            'R2': float(metrics['R2']),
+            'session': DATA_FILE.split('/')[-1].replace('_clean.csv', ''),
+            'seq_len': SEQ_LEN,
+            'epochs': EPOCHS,
+            'timestamp': timestamp
+        }
+        # add best hyperparams as columns
+        for k, v in best_hyperparams[model_name].items():
+            row[f'hp_{k}'] = v
+        metrics_rows.append(row)
+
+    metrics_df = pd.DataFrame(metrics_rows)
+    metrics_csv = f'results_optimized_{timestamp}.csv'
+    metrics_df.to_csv(metrics_csv, index=False)
+
+    # print final table
+    print("\n===============================================================================")
+    print("FINAL BAYESIAN OPTIMIZED RESULTS")
+    print("===============================================================================")
+    print(f"{'Model':<25} {'MAE':>8} {'RMSE':>8} {'R²':>8}")
+    print("-"*50)
+    for _, row in metrics_df.iterrows():
+        print(f"{row['model']:<25} {row['MAE']:>8.4f} {row['RMSE']:>8.4f} {row['R2']:>8.4f}")
+
+    print(f"\nJSON results saved to:    {results_file}")
+    print(f"CSV results saved to:     {metrics_csv}")
+    print(f"Optuna trial CSVs saved:  optuna_trials_[model].csv for each model")
+    print(f"\nAll done. Completed at: {datetime.now().strftime('%H:%M:%S')}")
