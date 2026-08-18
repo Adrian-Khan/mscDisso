@@ -18,8 +18,8 @@ from torch.utils.data import Dataset, DataLoader
 import optuna
 
 # config 
-DATA_FILE = "outputs\data_collection_outputs\session_008_clean.csv"
-#DATA_FILE = "/scratch0/adrikhan/sensor_project/session_008_clean.csv"
+#DATA_FILE = "outputs\data_collection_outputs\session_008_clean.csv" # windows
+DATA_FILE = "/scratch0/adrikhan/sensor_project/session_008_clean.csv" # linux
 SEQ_LEN = 120    # timesteps per sequence
 EPOCHS = 150     # final evaluation epochs
 TRAIN_SPLIT = 0.7
@@ -30,6 +30,7 @@ DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 torch.manual_seed(SEED)
 np.random.seed(SEED)
+
 print(f"Using device: {DEVICE}")
 print(f"Loading data from: {DATA_FILE}")
 
@@ -412,7 +413,7 @@ def objective(trial, model_type):
             kernel_size=kernel_size
         ).to(DEVICE)
 
-    # longer 40-epoch evaluation per trial for stable optimization
+    # 10 epochs like the paper 
     model, _, val_losses = train_model(
         model, train_loader, val_loader, 
         epochs=40, lr=lr, model_name=f"Trial_{trial.number}", verbose=False
@@ -447,7 +448,7 @@ if __name__ == "__main__":
 
         study.optimize(
             lambda trial: objective(trial, model_type=model_name),
-            n_trials=50,
+            n_trials=300,
             callbacks=[trial_callback])
         
         # clean parameter names (strip the prefix for final retraining)
