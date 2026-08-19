@@ -606,7 +606,7 @@ if __name__ == "__main__":
 
         # step 1: optuna optimisation
         for model_name in models_to_run:
-            print(f"\nStarting Optimization for {model_name}...", flush=True)
+            print(f"\nStarting Optimization for {model_name}", flush=True)
 
             study = optuna.create_study(
                 study_name=f"study_{model_name}_{feat_name}",
