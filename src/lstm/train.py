@@ -1,5 +1,5 @@
 """
-train.py
+train.py (and tuning)
 
 Trains LSTM, CNN-LSTM, and CNN-LSTM-Attention models with Bayesian Optimization (Optuna)
 Input: adc_raw (normalised) + gradient (normalised) + velocity/diff (normalised)
@@ -585,81 +585,108 @@ def objective(trial, model_type, feature_cols, target_col, break_col, df_clean):
 if __name__ == "__main__":
     optuna.logging.set_verbosity(optuna.logging.WARNING)
 
-    # clean previous trial logs
-    for old_file in glob.glob("optuna_trials_*.csv"):
-        try:
-            os.remove(old_file)
-        except OSError:
-            pass
+    # removed deleting old CSV files here because skipping will never trigger if its in
 
     models_to_run = ["LSTM", "CNN_LSTM", "CNN_LSTM_Attention"]
     all_results = {}
     all_best_hparams = {}
 
     for feat_name, feat_cols in FEATURE_SETS.items():
+
         print(f"\n==============================")
         print(f"FEATURE SET: {feat_name} -> {feat_cols}")
         print(f"==============================")
 
+        # check if entire feature set is already finished (plots + metrics exist)
+        completed = all(
+            os.path.exists(f"{model_name}_{feat_name}_Optimised_predictions.png")
+            for model_name in models_to_run
+        )
+        if completed:
+            print(f"Skipping feature set {feat_name} - all models already trained & evaluated.")
+            continue
+
         best_hyperparams = {}
         results = {}
 
-        # step 1: optuna optimisation
+        # step 1: optuna optimisation (or recover best params from CSV)
         for model_name in models_to_run:
-            print(f"\nStarting Optimization for {model_name}", flush=True)
+            trial_csv = f"optuna_trials_{model_name}_{feat_name}.csv"
 
-            study = optuna.create_study(
-                study_name=f"study_{model_name}_{feat_name}",
-                direction="minimize",
-                sampler=optuna.samplers.TPESampler(seed=SEED),
-                storage=None,
-            )
-
-            def trial_callback(study, trial):
-                best_val = (
-                    f"{study.best_value:.6f}" if len(study.trials) > 0 else "N/A"
-                )
-                trial_val = (
-                    f"{trial.value:.6f}" if trial.value is not None else "N/A"
-                )
-                clean_p = {
-                    k.replace(f"{model_name}_", ""): v
-                    for k, v in trial.params.items()
+            if os.path.exists(trial_csv):
+                print(f"Skipping Optuna for {model_name} on {feat_name} - loading best params from {trial_csv}.")
+                
+                # load previous study results from CSV to recover best parameters
+                trials_df = pd.read_csv(trial_csv)
+                best_trial = trials_df.loc[trials_df["value"].idxmin()]
+                
+                # extract hyperparams (stripping prefix)
+                param_cols = [c for c in trials_df.columns if c.startswith(f"params_{model_name}_")]
+                clean_params = {
+                    c.replace(f"params_{model_name}_", ""): best_trial[c]
+                    for c in param_cols
                 }
+                
+                # cast integer/categorical parameters back from float if needed
+                for int_param in ["hidden_size", "batch_size", "window_size", "conv1_filters", "kernel_size"]:
+                    if int_param in clean_params:
+                        clean_params[int_param] = int(clean_params[int_param])
 
-                current_trial = len(study.trials)
-                print(
-                    f"  Trial {current_trial}/{N_TRIALS} | Val loss: {trial_val} | Best: {best_val} | Params: {clean_p}"
+                best_hyperparams[model_name] = clean_params
+
+            else:
+                print(f"\nStarting Optimization for {model_name}", flush=True)
+
+                study = optuna.create_study(
+                    study_name=f"study_{model_name}_{feat_name}",
+                    direction="minimize",
+                    sampler=optuna.samplers.TPESampler(seed=SEED),
                 )
 
-            study.optimize(
-                lambda trial: objective(
-                    trial,
-                    model_type=model_name,
-                    feature_cols=feat_cols,
-                    target_col=TARGET_COL,
-                    break_col=BREAK_COL,
-                    df_clean=df,
-                ),
-                n_trials=N_TRIALS,
-                callbacks=[trial_callback],
-            )
+                def trial_callback(study, trial):
+                    best_val = f"{study.best_value:.6f}" if len(study.trials) > 0 else "N/A"
+                    trial_val = f"{trial.value:.6f}" if trial.value is not None else "N/A"
+                    clean_p = {
+                        k.replace(f"{model_name}_", ""): v
+                        for k, v in trial.params.items()
+                    }
+                    print(f"  Trial {len(study.trials)}/{N_TRIALS} | Val loss: {trial_val} | Best: {best_val} | Params: {clean_p}")
 
-            clean_params = {
-                k.replace(f"{model_name}_", ""): v
-                for k, v in study.best_params.items()
-            }
-            best_hyperparams[model_name] = clean_params
+                study.optimize(
+                    lambda trial: objective(
+                        trial,
+                        model_type=model_name,
+                        feature_cols=feat_cols,
+                        target_col=TARGET_COL,
+                        break_col=BREAK_COL,
+                        df_clean=df,
+                    ),
+                    n_trials=N_TRIALS,
+                    callbacks=[trial_callback],
+                )
 
-            trials_df = study.trials_dataframe()
-            trials_df.to_csv(
-                f"optuna_trials_{model_name}_{feat_name}.csv", index=False
-            )
+                clean_params = {
+                    k.replace(f"{model_name}_", ""): v
+                    for k, v in study.best_params.items()
+                }
+                best_hyperparams[model_name] = clean_params
+
+                # save trials dataframe
+                study.trials_dataframe().to_csv(trial_csv, index=False)
 
         # step 2: final retraining and testing
         print("\nRETRAINING FINAL MODELS WITH OPTIMAL HYPERPARAMETERS")
 
-        for model_name, params in best_hyperparams.items():
+        for model_name in models_to_run:
+            params = best_hyperparams[model_name]
+
+            pred_file = f"{model_name}_{feat_name}_Optimized_predictions.png"
+            loss_file = f"{model_name}_{feat_name}_Optimized_loss_curve.png"
+
+            if os.path.exists(pred_file) and os.path.exists(loss_file):
+                print(f"Skipping retraining for {model_name} on {feat_name} — output plots already exist.")
+                continue
+
             batch_size = params["batch_size"]
             lr = params["lr"]
             weight_decay = params["weight_decay"]
