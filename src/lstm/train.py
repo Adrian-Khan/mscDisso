@@ -20,7 +20,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset, TensorDataset
 
-# config 
+# config
 DATA_FILE = "/scratch0/adrikhan/sensor_project/session_008_clean.csv"
 EPOCHS = 150
 TRAIN_SPLIT = 0.70
@@ -38,29 +38,28 @@ print(f"Loading data from: {DATA_FILE}")
 # prep the data
 df = pd.read_csv(DATA_FILE)
 
-# normalise signals 
-adc = df["adc_raw"].values.astype(np.float32)
-strain = df["strain_ratio"].values.astype(np.float32)
+# compute raw gradient and 1st order difference before splitting
+adc_raw = df["adc_raw"].values.astype(np.float32)
+df["adc_grad_raw"] = np.gradient(adc_raw).astype(np.float32)
+df["adc_diff_raw"] = np.diff(adc_raw, prepend=adc_raw[0]).astype(np.float32)
 
-adc_min, adc_max = adc.min(), adc.max()
-strain_min, strain_max = strain.min(), strain.max()
+# PREVENT DATA LEAKAGE: CALCULATE MIN/MAX ONLY ON TRAIN SPLIT!!!!!!
+n = len(df)
+n_train = int(n * TRAIN_SPLIT)
+df_train_raw = df.iloc[:n_train]
 
-df["adc_norm"] = (adc - adc_min) / (adc_max - adc_min)
-df["strain_norm"] = (strain - strain_min) / (strain_max - strain_min)
+adc_min, adc_max = df_train_raw["adc_raw"].min(), df_train_raw["adc_raw"].max()
+strain_min, strain_max = df_train_raw["strain_ratio"].min(), df_train_raw["strain_ratio"].max()
+grad_min, grad_max = df_train_raw["adc_grad_raw"].min(), df_train_raw["adc_grad_raw"].max()
+diff_min, diff_max = df_train_raw["adc_diff_raw"].min(), df_train_raw["adc_diff_raw"].max()
 
-# compute and normalise gradient
-adc_grad = np.gradient(df["adc_norm"].values).astype(np.float32)
-grad_min, grad_max = adc_grad.min(), adc_grad.max()
-df["adc_grad_norm"] = (adc_grad - grad_min) / (grad_max - grad_min)
+# apply normalisation across full dataframe using TRAIN statistics
+df["adc_norm"] = (df["adc_raw"] - adc_min) / (adc_max - adc_min + 1e-8)
+df["strain_norm"] = (df["strain_ratio"] - strain_min) / (strain_max - strain_min + 1e-8)
+df["adc_grad_norm"] = (df["adc_grad_raw"] - grad_min) / (grad_max - grad_min + 1e-8)
+df["adc_diff_norm"] = (df["adc_diff_raw"] - diff_min) / (diff_max - diff_min + 1e-8)
 
-# compute and normalise 1st order difference
-adc_diff = np.diff(
-    df["adc_norm"].values, prepend=df["adc_norm"].values[0]
-).astype(np.float32)
-diff_min, diff_max = adc_diff.min(), adc_diff.max()
-df["adc_diff_norm"] = (adc_diff - diff_min) / (diff_max - diff_min)
-
-# save normalization parameters
+# save normalisation parameters (derived strictly from training set)
 norm_params = {
     "adc_min": float(adc_min),
     "adc_max": float(adc_max),
@@ -74,7 +73,7 @@ norm_params = {
 
 with open("norm_params.json", "w") as f:
     json.dump(norm_params, f, indent=2)
-print("Saved normalisation parameters to norm_params.json")
+print("Saved non-leaked normalisation parameters to norm_params.json")
 
 FEATURE_COLS = ["adc_norm", "adc_grad_norm", "adc_diff_norm"]
 FEATURE_SETS = {
@@ -87,7 +86,8 @@ TARGET_COL = "strain_norm"
 BREAK_COL = "sequence_break"
 N_TRIALS = 100
 
-#  model definitions 
+
+# model definitions
 class LSTMModel(nn.Module):
 
     def __init__(
@@ -300,7 +300,7 @@ def prepare_dataloaders(
     return train_loader, val_loader, test_loader, (X_test, y_test)
 
 
-# training ande eval functions
+# training and eval functions
 def train_model(
     model,
     train_loader,
@@ -416,7 +416,7 @@ def evaluate_model(model, test_loader, model_name, strain_min, strain_max):
     return preds, targets, mae, rmse, r2
 
 
-# plotting functions and helpers 
+# plotting functions and helpers
 def plot_losses(train_losses, val_losses, model_name):
     plt.figure(figsize=(10, 4))
     plt.plot(train_losses, label="Train loss")
@@ -500,7 +500,7 @@ def plot_attention(model, X_test, n_examples=3):
     plt.close()
 
 
-# optuna optimisation objective 
+# optuna optimisation objective
 def objective(trial, model_type, feature_cols, target_col, break_col, df_clean):
     lr = trial.suggest_float(f"{model_type}_lr", 1e-4, 3e-3, log=True)
     weight_decay = trial.suggest_float(
@@ -528,16 +528,15 @@ def objective(trial, model_type, feature_cols, target_col, break_col, df_clean):
         val_split=VAL_SPLIT,
     )
 
-    # use len(feature_cols) dynamically based on the current feature set
     input_dim = len(feature_cols)
 
     if model_type == "LSTM":
         model = LSTMModel(
             input_size=input_dim,
-            hidden_size=hidden_size, 
-            dropout=dropout
+            hidden_size=hidden_size,
+            dropout=dropout,
         ).to(DEVICE)
-        
+
     elif model_type == "CNN_LSTM":
         conv1_filters = trial.suggest_categorical(
             f"{model_type}_conv1_filters", [32, 64]
@@ -552,7 +551,7 @@ def objective(trial, model_type, feature_cols, target_col, break_col, df_clean):
             conv1_filters=conv1_filters,
             kernel_size=kernel_size,
         ).to(DEVICE)
-        
+
     elif model_type == "CNN_LSTM_Attention":
         conv1_filters = trial.suggest_categorical(
             f"{model_type}_conv1_filters", [32, 64]
@@ -572,7 +571,7 @@ def objective(trial, model_type, feature_cols, target_col, break_col, df_clean):
         model,
         train_loader,
         val_loader,
-        epochs=15, # increased slightly to give window sizes time to converge
+        epochs=15,
         lr=lr,
         weight_decay=weight_decay,
         model_name=f"Trial_{trial.number}",
@@ -585,8 +584,6 @@ def objective(trial, model_type, feature_cols, target_col, break_col, df_clean):
 if __name__ == "__main__":
     optuna.logging.set_verbosity(optuna.logging.WARNING)
 
-    # removed deleting old CSV files here because skipping will never trigger if its in
-
     models_to_run = ["LSTM", "CNN_LSTM", "CNN_LSTM_Attention"]
     all_results = {}
     all_best_hparams = {}
@@ -597,45 +594,45 @@ if __name__ == "__main__":
         print(f"FEATURE SET: {feat_name} -> {feat_cols}")
         print(f"==============================")
 
-        # check if entire feature set is already finished (plots + metrics exist)
-        completed = all(
-            os.path.exists(f"{model_name}_{feat_name}_Optimised_predictions.png")
-            for model_name in models_to_run
-        )
-        if completed:
-            print(f"Skipping feature set {feat_name} - all models already trained & evaluated.")
-            continue
-
         best_hyperparams = {}
         results = {}
 
-        # step 1: optuna optimisation (or recover best params from CSV)
+        # STEP 1: optuna optimisation (or recover best params from CSV)
         for model_name in models_to_run:
             trial_csv = f"optuna_trials_{model_name}_{feat_name}.csv"
 
             if os.path.exists(trial_csv):
-                print(f"Skipping Optuna for {model_name} on {feat_name} - loading best params from {trial_csv}.")
-                
-                # load previous study results from CSV to recover best parameters
+                print(
+                    f"Skipping Optuna for {model_name} on {feat_name} - loading best params from {trial_csv}."
+                )
+
                 trials_df = pd.read_csv(trial_csv)
                 best_trial = trials_df.loc[trials_df["value"].idxmin()]
-                
-                # extract hyperparams (stripping prefix)
-                param_cols = [c for c in trials_df.columns if c.startswith(f"params_{model_name}_")]
+
+                param_cols = [
+                    c
+                    for c in trials_df.columns
+                    if c.startswith(f"params_{model_name}_")
+                ]
                 clean_params = {
                     c.replace(f"params_{model_name}_", ""): best_trial[c]
                     for c in param_cols
                 }
-                
-                # cast integer/categorical parameters back from float if needed
-                for int_param in ["hidden_size", "batch_size", "window_size", "conv1_filters", "kernel_size"]:
+
+                for int_param in [
+                    "hidden_size",
+                    "batch_size",
+                    "window_size",
+                    "conv1_filters",
+                    "kernel_size",
+                ]:
                     if int_param in clean_params:
                         clean_params[int_param] = int(clean_params[int_param])
 
                 best_hyperparams[model_name] = clean_params
 
             else:
-                print(f"\nStarting Optimization for {model_name}", flush=True)
+                print(f"\nStarting Optimisation for {model_name}", flush=True)
 
                 study = optuna.create_study(
                     study_name=f"study_{model_name}_{feat_name}",
@@ -644,13 +641,23 @@ if __name__ == "__main__":
                 )
 
                 def trial_callback(study, trial):
-                    best_val = f"{study.best_value:.6f}" if len(study.trials) > 0 else "N/A"
-                    trial_val = f"{trial.value:.6f}" if trial.value is not None else "N/A"
+                    best_val = (
+                        f"{study.best_value:.6f}"
+                        if len(study.trials) > 0
+                        else "N/A"
+                    )
+                    trial_val = (
+                        f"{trial.value:.6f}"
+                        if trial.value is not None
+                        else "N/A"
+                    )
                     clean_p = {
                         k.replace(f"{model_name}_", ""): v
                         for k, v in trial.params.items()
                     }
-                    print(f"  Trial {len(study.trials)}/{N_TRIALS} | Val loss: {trial_val} | Best: {best_val} | Params: {clean_p}")
+                    print(
+                        f"  Trial {len(study.trials)}/{N_TRIALS} | Val loss: {trial_val} | Best: {best_val} | Params: {clean_p}"
+                    )
 
                 study.optimize(
                     lambda trial: objective(
@@ -671,41 +678,35 @@ if __name__ == "__main__":
                 }
                 best_hyperparams[model_name] = clean_params
 
-                # save trials dataframe
                 study.trials_dataframe().to_csv(trial_csv, index=False)
 
-        # step 2: final retraining and testing
+        # STEP 2: final retraining, testing, and saving weights
         print("\nRETRAINING FINAL MODELS WITH OPTIMAL HYPERPARAMETERS")
 
         for model_name in models_to_run:
             params = best_hyperparams[model_name]
-
-            pred_file = f"{model_name}_{feat_name}_Optimized_predictions.png"
-            loss_file = f"{model_name}_{feat_name}_Optimized_loss_curve.png"
-
-            if os.path.exists(pred_file) and os.path.exists(loss_file):
-                print(f"Skipping retraining for {model_name} on {feat_name} — output plots already exist.")
-                continue
 
             batch_size = params["batch_size"]
             lr = params["lr"]
             weight_decay = params["weight_decay"]
             window_size = params["window_size"]
 
-            train_loader, val_loader, test_loader, (X_test, _) = prepare_dataloaders(
-                df=df,
-                feature_cols=feat_cols,  
-                target_col=TARGET_COL,
-                break_col=BREAK_COL,
-                window_size=window_size,
-                batch_size=batch_size,
-                train_split=TRAIN_SPLIT,
-                val_split=VAL_SPLIT,
+            train_loader, val_loader, test_loader, (X_test, _) = (
+                prepare_dataloaders(
+                    df=df,
+                    feature_cols=feat_cols,
+                    target_col=TARGET_COL,
+                    break_col=BREAK_COL,
+                    window_size=window_size,
+                    batch_size=batch_size,
+                    train_split=TRAIN_SPLIT,
+                    val_split=VAL_SPLIT,
+                )
             )
 
             if model_name == "LSTM":
                 final_model = LSTMModel(
-                    input_size=len(feat_cols),    
+                    input_size=len(feat_cols),
                     hidden_size=params["hidden_size"],
                     dropout=params["dropout"],
                 )
@@ -736,7 +737,14 @@ if __name__ == "__main__":
                 model_name=f"{model_name}_{feat_name}_Optimized",
             )
 
-            plot_losses(train_losses, val_losses, f"{model_name}_{feat_name}_Optimized")
+            # SAVE WEIGHTS!!
+            weights_file = f"{model_name}_{feat_name}_best.pth"
+            torch.save(final_model.state_dict(), weights_file)
+            print(f"Saved model weights to: {weights_file}")
+
+            plot_losses(
+                train_losses, val_losses, f"{model_name}_{feat_name}_Optimized"
+            )
 
             preds, targets, mae, rmse, r2 = evaluate_model(
                 final_model,
@@ -745,7 +753,9 @@ if __name__ == "__main__":
                 strain_min,
                 strain_max,
             )
-            plot_predictions(preds, targets, f"{model_name}_{feat_name}_Optimized")
+            plot_predictions(
+                preds, targets, f"{model_name}_{feat_name}_Optimized"
+            )
 
             results[model_name] = {"MAE": mae, "RMSE": rmse, "R2": r2}
 
@@ -755,9 +765,9 @@ if __name__ == "__main__":
         all_results[feat_name] = results
         all_best_hparams[feat_name] = best_hyperparams
 
-    # step 3: save results
+    # STEP 3: save final experiment results
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    results_file = f"results_optimized_feature_ablation_{feat_name}_{timestamp}.json"
+    results_file = f"results_optimized_feature_ablation_{timestamp}.json"
     with open(results_file, "w") as f:
         json.dump(
             {
@@ -774,9 +784,13 @@ if __name__ == "__main__":
             indent=2,
         )
 
-    print("\nFINAL BAYESIAN OPTIMIZED RESULTS (FEATURE ABLATION)")
-    print(f"{'FeatureSet':<15} {'Model':<25} {'MAE':>8} {'RMSE':>8} {'R2':>8}")
-    print("====================================================================================")
+    print("\nFINAL BAYESIAN OPTIMISED RESULTS (FEATURE ABLATION)")
+    print(
+        f"{'FeatureSet':<15} {'Model':<25} {'MAE':>8} {'RMSE':>8} {'R2':>8}"
+    )
+    print(
+        "===================================================================================="
+    )
     for feat_name, models in all_results.items():
         for model_name, metrics in models.items():
             print(
