@@ -131,7 +131,7 @@ class CausalTCNModel(nn.Module):
         layers = []
         num_levels = len(num_channels)
         for i in range(num_levels):
-            dilation_size = 2 ** i  # exponentially increasing dilation (1, 2, 4, 8...)
+            dilation_size = 2 ** i  # exponentially increasing dilation (1, 2, 4, 8... etc)
             in_channels = input_size if i == 0 else num_channels[i - 1]
             out_channels = num_channels[i]
             padding = (kernel_size - 1) * dilation_size
@@ -396,7 +396,7 @@ if __name__ == "__main__":
             best_hparams[model_name] = clean_params
 
         else:
-            print(f"\nStarting Optuna Hyperparameter Optimisation for {model_name}...", flush=True)
+            print(f"\nStarting Optuna Hyperparameter Optimisation for {model_name}", flush=True)
             study = optuna.create_study(
                 study_name=f"study_{model_name}_{feat_name}",
                 direction="minimize",
