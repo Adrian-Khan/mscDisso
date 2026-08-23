@@ -328,6 +328,13 @@ def plot_predictions(preds, targets, model_name):
     plt.close()
 
 
+# convert for json dumping to fix errors was receiving 
+def default_converter(o):
+    if isinstance(o, np.generic):
+        return o.item()  # converts np.float32, np.int64 etc to native Python float/int
+    raise TypeError(f"Object of type {o.__class__.__name__} is not JSON serializable")
+
+
 def objective(trial, model_type, feature_cols, target_col, break_col, df_clean):
     lr = trial.suggest_float(f"{model_type}_lr", 1e-4, 3e-3, log=True)
     weight_decay = trial.suggest_float(f"{model_type}_weight_decay", 1e-5, 1e-2, log=True)
@@ -439,8 +446,9 @@ if __name__ == "__main__":
 
     # save results and metadata summary 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    with open(f"results_tcn_vs_lstm_{timestamp}.json", "w") as f:
-        json.dump({"metrics": results, "hyperparameters": best_hparams}, f, indent=2)
+
+    with open(f"results_{model_name}.json", "w") as f:
+        json.dump({"metrics": results, "hyperparameters": best_hparams}, f, indent=2, default=default_converter)
 
     print("\n==================================================")
     print("REAL-TIME BENCHMARK SUMMARY (adc_grad BASELINE)")
