@@ -35,8 +35,7 @@ def find_clip(frame, lower, upper):
     mask = cv2.inRange(hsv, lower, upper)
     mask = cv2.erode(mask, None, iterations=2)
     mask = cv2.dilate(mask, None, iterations=2)
-    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL,
-                                    cv2.CHAIN_APPROX_SIMPLE)
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if not contours:
         return None
     # take largest contour
@@ -94,7 +93,7 @@ with open(OUTPUT_FILE, 'w', newline='') as f:
             continue
 
         red = find_clip(frame, RED_LOW, RED_HIGH)
-        blue   = find_clip(frame, BLUE_LOW,   BLUE_HIGH)
+        blue   = find_clip(frame, BLUE_LOW, BLUE_HIGH)
 
         if red and blue:
             d = np.sqrt((blue[0]-red[0])**2 +
@@ -103,7 +102,7 @@ with open(OUTPUT_FILE, 'w', newline='') as f:
 
             # show detection during rest phase
             cv2.circle(frame, red, 12, (0, 255, 255), -1)
-            cv2.circle(frame, blue,   12, (255, 100, 0), -1)
+            cv2.circle(frame, blue, 12, (255, 100, 0), -1)
             cv2.line(frame, red, blue, (255, 255, 255), 2)
             cv2.putText(frame, "REST PHASE - hold still",
                         (20, 40),
@@ -138,26 +137,25 @@ with open(OUTPUT_FILE, 'w', newline='') as f:
             line = ser.readline()
             parts = line.decode().strip().split(',')
             if len(parts) == 4:
-                last_adc        = int(parts[1])
-                last_voltage    = float(parts[2])
+                last_adc  = int(parts[1])
+                last_voltage = float(parts[2])
                 last_resistance = float(parts[3])
 
 
         # find both clips
         red = find_clip(frame, RED_LOW, RED_HIGH)
-        blue   = find_clip(frame, BLUE_LOW,   BLUE_HIGH)
+        blue = find_clip(frame, BLUE_LOW, BLUE_HIGH)
 
         pixel_dist  = None
         strain_ratio = None
 
         if red and blue:
-            pixel_dist = np.sqrt((blue[0]-red[0])**2 +
-                                  (blue[1]-red[1])**2)
+            pixel_dist = np.sqrt((blue[0]-red[0])**2 + (blue[1]-red[1])**2)
             strain_ratio = pixel_dist / resting_distance
 
             # draw tracking
             cv2.circle(frame, red, 12, (0, 255, 255), -1)
-            cv2.circle(frame, blue,   12, (255, 100, 0), -1)
+            cv2.circle(frame, blue, 12, (255, 100, 0), -1)
             cv2.line(frame, red, blue, (0, 255, 0), 2)
             cv2.putText(frame,
                         f"Strain: {strain_ratio:.3f}",
@@ -186,8 +184,8 @@ with open(OUTPUT_FILE, 'w', newline='') as f:
             last_resistance,
             red[0] if red else None,
             red[1] if red else None,
-            blue[0]   if blue   else None,
-            blue[1]   if blue   else None,
+            blue[0] if blue else None,
+            blue[1] if blue else None,
             pixel_dist,
             resting_distance,
             strain_ratio
