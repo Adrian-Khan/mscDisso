@@ -1,5 +1,5 @@
 """
-train.py - Real-Time Benchmark: Champion LSTM vs. Causal TCN
+tcn.py - Real-Time Benchmark: Champion LSTM vs. Causal TCN
 Feature Baseline: adc_grad ('adc_norm', 'adc_grad_norm')
 """
 
