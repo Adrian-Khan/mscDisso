@@ -47,7 +47,7 @@ df["adc_diff_raw"] = np.diff(adc_raw, prepend=adc_raw[0]).astype(np.float32)
 df["adc_grad2_raw"] = np.gradient(df["adc_grad_raw"].values).astype(np.float32)
 
 # time lagged features (lags: 1, 3, 5 steps)
-for lag in [1, 3, 5]:
+for lag in [10, 15, 30]:
     df[f"adc_lag_{lag}_raw"] = df["adc_raw"].shift(lag).bfill().astype(np.float32)
 
 # PREVENT DATA LEAKAGE: DERIVE MIN/MAX ONLY FROM TRAIN SPLIT!!
@@ -57,7 +57,7 @@ df_train_raw = df.iloc[:n_train]
 
 raw_cols_to_normalize = [
     "adc_raw", "strain_ratio", "adc_grad_raw", "adc_diff_raw",
-    "adc_grad2_raw", "adc_lag_1_raw", "adc_lag_3_raw", "adc_lag_5_raw"
+    "adc_grad2_raw", "adc_lag_10_raw", "adc_lag_15_raw", "adc_lag_30_raw"
 ]
 
 norm_params = {}
@@ -547,8 +547,9 @@ if __name__ == "__main__":
     phase2_sets = {
         "Phase2a_2ndOrder": best_baseline_cols + ["adc_grad2_norm"],
         "Phase2b_Rolling": best_baseline_cols + ["adc_roll_mean_short_norm", "adc_roll_std_short_norm", "adc_roll_mean_long_norm"],
-        "Phase2c_Lagged": best_baseline_cols + ["adc_lag_1_norm", "adc_lag_3_norm", "adc_lag_5_norm"],
+        "Phase2c_Lagged": best_baseline_cols + ["adc_lag_10_norm", "adc_lag_15_norm", "adc_lag_30_norm"],
     }
+
     phase2_results, phase2_hparams = run_experiment_suite(phase2_sets, models_to_run)
 
     # combine all experiment logs
