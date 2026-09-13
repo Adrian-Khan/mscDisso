@@ -15,7 +15,7 @@ def mouse_callback(event, x, y, flags, param):
     if event == cv2.EVENT_MOUSEMOVE:
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
         h, s, v = hsv[y, x]
-        print(f"x={x}, y={y} → H={h}, S={s}, V={v}")
+        print(f"x={x}, y={y} -> H={h}, S={s}, V={v}")
 
 cv2.namedWindow('HSV Picker')
 cv2.setMouseCallback('HSV Picker', mouse_callback)

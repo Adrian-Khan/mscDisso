@@ -1,7 +1,7 @@
 """
 diagnostics.py
 
-Analyses raw vs. processed strain gauge & ADC data, detects alignment lag, 
+Analyses raw vs. processed strain gauge & ADC data, detects alignment lag from cleaned dataset,
 and measures baseline linear correlation for train.py data pre-processing.
 """
 
@@ -13,7 +13,7 @@ from sklearn.linear_model import LinearRegression
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
 # config 
-DATA_PATH = Path('outputs/data_collection_outputs/session_008_clean.csv')
+DATA_PATH = Path('outputs/testing_01/testing_01_clean.csv') # using the cleaned dataset from data_inspection.py
 
 if not DATA_PATH.exists():
     raise FileNotFoundError(f"Target CSV not found at: {DATA_PATH.resolve()}")
@@ -133,7 +133,7 @@ axes[2].legend(loc='upper left')
 axes[2].grid(True, alpha=0.3)
 
 plt.tight_layout()
-output_img = f'diagnostics_raw_vs_strain_008.png'
+output_img = f'diagnostics_raw_vs_strain_test02.png'
 plt.savefig(output_img, dpi=150)
 plt.show()
 

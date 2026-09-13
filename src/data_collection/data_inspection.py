@@ -3,14 +3,20 @@ data_inspection.py
 inspect the data collected in the csv files from capture.py and export as cleaned 
 """
 
+from pathlib import Path
+
 import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
 
-#  change global var for session 
-SESSION = 'outputs/data_collection_outputs/session_008.csv'
+# change global var for session 
+SCRIPT_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = SCRIPT_DIR.parent.parent if "src" in SCRIPT_DIR.parts else Path.cwd()
 
-df = pd.read_csv(SESSION)
+SESSION_PATH = PROJECT_ROOT / "outputs" / "testing_08" / "session_008.csv"
+SESSION = str(SESSION_PATH)
+
+df = pd.read_csv(SESSION_PATH)
 
 # filter implausible electrical values before missingness analysis
 df = df[(df['adc_raw'].isna()) | ((df['adc_raw'] > 10) & (df['adc_raw'] < 4085))]

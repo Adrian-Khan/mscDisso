@@ -18,16 +18,16 @@ import numpy as np
 SERIAL_PORT = 'COM7'
 BAUD_RATE = 115200
 CAMERA_INDEX = 2
-OUTPUT_FILE = 'outputs/data_collection_outputs/session_008.csv'  # increment 
+OUTPUT_FILE = 'outputs/testing_02/testing_02.csv'  # increment 
 
 # hsv ranges found in hsv_finder.py for my alligator clips 
 # red clip (left)
-RED_LOW  = np.array([165, 120, 120])
-RED_HIGH = np.array([180, 185, 230])
+RED_LOW  = np.array([0, 140, 120])
+RED_HIGH = np.array([180, 200, 200])
 
 # blue clip (right)
 BLUE_LOW  = np.array([100, 200, 100])
-BLUE_HIGH = np.array([172, 255, 200])
+BLUE_HIGH = np.array([140, 255, 200])
 
 def find_clip(frame, lower, upper):
     # find the centre of the clip
@@ -101,7 +101,7 @@ with open(OUTPUT_FILE, 'w', newline='') as f:
             resting_distances.append(d)
 
             # show detection during rest phase
-            cv2.circle(frame, red, 12, (0, 255, 255), -1)
+            cv2.circle(frame, red, 12, (0, 0, 255), -1)
             cv2.circle(frame, blue, 12, (255, 100, 0), -1)
             cv2.line(frame, red, blue, (255, 255, 255), 2)
             cv2.putText(frame, "REST PHASE - hold still",
